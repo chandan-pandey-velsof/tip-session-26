@@ -17,6 +17,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.middleware.common.CommonMiddleware',
 ]
 
@@ -45,7 +46,9 @@ DATABASES = {
 }
 
 STATIC_URL = '/static/'
-STATICFILES_DIRS = [BASE_DIR]   # serves tip_design.css from project root
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICS_DIRS = [BASE_DIR]
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # TIP API configuration — injected at deploy time by the AI Coder system
 TIP_API_URL = os.environ.get('TIP_API_URL', '')

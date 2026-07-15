@@ -135,9 +135,62 @@ def index(request):
                 return "tip-tag tip-tag-error"
             return "tip-tag tip-tag-default"
 
+        # Build the escaped query for display in the API info banner
+        query_display = query.replace("<", "&lt;").replace(">", "&gt;")
+        api_endpoint_used = f"POST {settings.TIP_API_URL}/v1/patent-lookup/search"
+        api_payload_used = '{&nbsp;"query":&nbsp;"' + query_display + '"}'
+
+        api_info_html = f"""
+        <!-- ── API Info Banner ────────────────────────────────────── -->
+        <div class="tip-card" style="margin-top:24px;padding:16px 22px;
+                     border-left:4px solid var(--tip-primary);background:var(--tip-bg-alt,#f9fafb);">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+                <span class="tip-tag tip-tag-primary" style="font-size:12px;">API Used</span>
+                <strong style="font-size:14px;color:var(--tip-text);">TIP Patent Lookup API</strong>
+            </div>
+            <div class="tip-table-wrap" style="margin:0;">
+                <table class="tip-table" style="font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="width:160px;">Property</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Endpoint</td>
+                            <td><code>POST /v1/patent-lookup/search</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Base URL</td>
+                            <td><code>{settings.TIP_API_URL}</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Full URL</td>
+                            <td><code>{settings.TIP_API_URL}/v1/patent-lookup/search</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Auth Header</td>
+                            <td><code>x-api-key: &lt;TIP_API_TOKEN&gt;</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Request Body</td>
+                            <td><code>{api_payload_used}</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Response Path</td>
+                            <td><code>data.application.*</code> &mdash; attorney, examiner, assignee, filing date, status &hellip;</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>"""
+
         details_html = f"""
+        {api_info_html}
+
         <!-- ── Patent Header Card ─────────────────────────────────── -->
-        <div class="tip-card" style="margin-top:32px;">
+        <div class="tip-card" style="margin-top:24px;">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;
                         flex-wrap:wrap;gap:12px;margin-bottom:20px;">
                 <div>
@@ -307,7 +360,7 @@ def index(request):
     # ── Hint text shown before any search ────────────────────────────────────
     hint_html = ""
     if not searched:
-        hint_html = """
+        hint_html = f"""
         <div class="tip-card" style="margin-top:32px;padding:32px 28px;">
             <h3 style="margin:0 0 12px;font-size:16px;font-weight:600;">
                 &#128161;&nbsp; How to search
@@ -337,6 +390,51 @@ def index(request):
                         <tr>
                             <td>EP / Foreign Number</td>
                             <td><code>EP1514569A1</code></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ── API Reference Card (shown on landing) ─────────────────────── -->
+        <div class="tip-card" style="margin-top:24px;padding:24px 28px;
+                     border-left:4px solid var(--tip-primary);">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+                <span class="tip-tag tip-tag-primary">API Used</span>
+                <strong style="font-size:15px;color:var(--tip-text);">TIP Patent Lookup API</strong>
+            </div>
+            <div class="tip-table-wrap" style="margin:0;">
+                <table class="tip-table" style="font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th style="width:160px;">Property</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Endpoint</td>
+                            <td><code>POST /v1/patent-lookup/search</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Base URL</td>
+                            <td><code>{settings.TIP_API_URL}</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Full URL</td>
+                            <td><code>{settings.TIP_API_URL}/v1/patent-lookup/search</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Auth Header</td>
+                            <td><code>x-api-key: &lt;TIP_API_TOKEN&gt;</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Request Body</td>
+                            <td><code>&#123;&nbsp;"query":&nbsp;"&lt;patent number&gt;"&nbsp;&#125;</code></td>
+                        </tr>
+                        <tr>
+                            <td style="color:var(--tip-text-secondary);font-weight:500;">Response Path</td>
+                            <td><code>data.application.*</code> &mdash; attorney, examiner, assignee, filing date, status &hellip;</td>
                         </tr>
                     </tbody>
                 </table>

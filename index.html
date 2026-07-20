@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TIP - Unified Search</title>
+  <link rel="stylesheet" href="/static/tip_design.css" />
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/htm@3/dist/htm.umd.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const { useState, useEffect, useRef, useCallback } = React;
+    const html = htm.bind(React.createElement);
+    const USER_REQUEST = "Build a page with a source selector and a dependent search. At the top, a dropdown to choose the search source \u2014 Patent or Attorney. Below it, a search box whose behavior depends on the selected source: When the source changes, clear the current search and results, and update the placeholder to match. As I type (minimum 2 characters), call the suggest API for the selected source and show matching results in a dropdown below the input. When I pick a result, call the details API for the selected source and show the returned details in cards, using only real API values (never hardcoded; show \u2014\u2014 for missing fields). Patent \u2192 the patent-lookup search API. Attorney \u2192 the prosecutor overview API (POST with search_data = the selection and mode=att). Show a placeholder before any search, a loading state while fetching, and an error card if a call fails. Include the standard Diagnostics panel.";
+
+    function App() {
+      const [source, setSource] = useState('patent');
+      const [query, setQuery] = useState('');
+      const [suggestions, setSuggestions] = useState([]);
+      const [showDropdown, setShowDropdown] = useState(false);
+      const [selectedItem, setSelectedItem] = useState(null);
+      const [details, setDetails] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [suggestLoading, setSuggestLoading] = useState(false);
+      const [error, setError] = useState(null);
+      const [apiCalls, setApiCalls] = useState([]);
+      const searchRef = useRef(null);
+      const debounceRef = useRef(null);
+
+      async function callTip(method, path, opts, meta) {
+        const res = await fetch(path, { method, ...(opts || {}) });
+        const raw = await res.text();
+        let body;
+        try { body = JSON.parse(raw); } catch { body = raw; }
+        setApiCalls(prev => prev.concat([{
+          method, path, status: res.status, ok: res.ok,
+          input: (meta && meta.input) || null,
+          output: meta && meta.output ? meta.output(body) : body,
+          mapping: (meta && meta.mapping) || null,
+        }]));
+        if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + (typeof body === 'string' ? body : (body.message || 'Unknown error')));
+        return body;
+      }
+
+      // Clear everything when source changes
+      function handleSourceChange(e) {
+        const val = e.target.value;
+        setSource(val);
+        setQuery('');
+        setSuggestions([]);
+        setShowDropdown(false);
+        setSelectedItem(null);
+        setDetails(null);
+        setError(null);
+        setLoading(false);
+        setSuggestLoading(false);
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+      }
+
+      // Debounced suggest on typing
+      function handleQueryChange(e) {
+        const val = e.target.value;
+        setQuery(val);
+        setSelectedItem(null);
+        setDetails(null);
+        setError(null);
+        setShowDropdown(false);
+
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+
+        if (val.length < 2) {
+          setSuggestions([]);
+          return;
+        }
+
+        setSuggestLoading(true);
+        debounceRef.current = setTimeout(() => {
+          fetchSuggestions(val);
+        }, 300);
+      }
+
+      async function fetchSuggestions(q) {
+        try {
+          let path;
+          if (source === 'patent') {
+            path = '/tip-api/v1/patent-lookup/suggest?q=' + encodeURIComponent(q) + '&limit=10';
+          } else {
+            path = '/tip-api/v1/prosecutor/suggest?q=' + encodeURIComponent(q) + '&mode=att';
+          }
+          const body = await callTip('GET', path, null, {
+            input: { q: q, source: source },
+            output: (b) => b.data ? b.data.slice(0, 5) : [],
+            mapping: source === 'patent'
+              ? 'data.results[].id, data.results[].display, data.results[].title -> suggestion dropdown'
+              : 'data[].id, data[].text -> suggestion dropdown',
+          });
+          const items = Array.isArray(body) ? body : [];
+          setSuggestions(items);
+          setShowDropdown(items.length > 0);
+        } catch (err) {
+          setSuggestions([]);
+          setShowDropdown(false);
+        } finally {
+          setSuggestLoading(false);
+        }
+      }
+
+      // Pick a suggestion
+      function handleSelect(item) {
+        setShowDropdown(false);
+        setSelectedItem(item);
+        if (source === 'patent') {
+          setQuery(item.display || item.id);
+        } else {
+          setQuery(item.text || item.id);
+        }
+        fetchDetails(item);
+      }
+
+      async function fetchDetails(item) {
+        setLoading(true);
+        setError(null);
+        setDetails(null);
+        try {
+          if (source === 'patent') {
+            const searchValue = item.display || item.id;
+            const body = await callTip('POST', '/tip-api/v1/patent-lookup/search', {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: searchValue }),
+            }, {
+              input: { query: searchValue, search_type: 'auto' },
+              output: (b) => {
+                const s = b.data && b.data.result && b.data.result.summary ? b.data.result.summary : null;
+                return {
+                  title: s ? s.title : null,
+                  status: s ? s.status : null,
+                  filing_date: s ? s.filing_date : null,
+                  grant_date: s ? s.grant_date : null,
+                  application_type: s ? s.application_type : null,
+                  examiner_name: s ? s.examiner_name : null,
+                  group_art_unit: s ? s.group_art_unit : null,
+                  class_subclass: s ? s.class_subclass : null,
+                  entity_status: s ? s.entity_status : null,
+                  first_inventor_name: s ? s.first_inventor_name : null,
+                  first_applicant_name: s ? s.first_applicant_name : null,
+                  patent_number: s ? s.patent_number : null,
+                  application_number: s ? s.application_number : null,
+                  earliest_publication_number: s ? s.earliest_publication_number : null,
+                  earliest_publication_date: s ? s.earliest_publication_date : null,
+                  status_date: s ? s.status_date : null,
+                };
+              },
+              mapping: 'data.result.summary.title -> Title card, .status -> Status, .filing_date -> Filing Date, .grant_date -> Grant Date, .application_type -> Type, .examiner_name -> Examiner, .group_art_unit -> GAU, .class_subclass -> Class/Subclass, .entity_status -> Entity, .first_inventor_name -> First Inventor, .first_applicant_name -> First Applicant, .patent_number -> Patent Number, .application_number -> App Number, .earliest_publication_number -> Pub Number, .earliest_publication_date -> Pub Date, .status_date -> Status Date',
+            });
+            setDetails(body);
+          } else {
+            const searchValue = item.text || item.id;
+            const body = await callTip('POST', '/tip-api/v1/prosecutor/overview', {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ search_data: searchValue, mode: 'att' }),
+            }, {
+              input: { search_data: searchValue, mode: 'att' },
+              output: (b) => {
+                const er = b.data && b.data.ex_rule ? b.data.ex_rule : {};
+                const p = er.profile || {};
+                const oa = er.oa || {};
+                const pend = er.pendency || {};
+                return {
+                  name: p.name || null,
+                  experience: p.experience != null ? p.experience : null,
+                  gau: p.gau || null,
+                  total: p.total != null ? p.total : null,
+                  granted: p.granted != null ? p.granted : null,
+                  grant_rate_text: p.grant_rate_text || null,
+                  app_range: p.app_range || null,
+                  least_oa: oa.least_oa != null ? oa.least_oa : null,
+                  average_oa: oa.average_oa != null ? oa.average_oa : null,
+                  most_oa: oa.most_oa != null ? oa.most_oa : null,
+                  shortest_pendency: pend.shortest || null,
+                  average_pendency: pend.average || null,
+                  longest_pendency: pend.longest || null,
+                };
+              },
+              mapping: 'data.ex_rule.profile.name -> Name, .experience -> Experience, .gau -> GAU, .total -> Total Apps, .granted -> Granted, .grant_rate_text -> Grant Rate, .app_range -> App Range, data.ex_rule.oa.least_oa -> Min OA, .average_oa -> Avg OA, .most_oa -> Max OA, data.ex_rule.pendency.shortest -> Min Pendency, .average -> Avg Pendency, .longest -> Max Pendency',
+            });
+            setDetails(body);
+          }
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      // Close dropdown on outside click
+      useEffect(() => {
+        function handleClick(e) {
+          if (searchRef.current && !searchRef.current.contains(e.target)) {
+            setShowDropdown(false);
+          }
+        }
+        document.addEventListener('mousedown', handleClick);
+        return () => document.removeEventListener('mousedown', handleClick);
+      }, []);
+
+      const placeholder = source === 'patent' ? 'Search patent...' : 'Search attorney...';
+
+      function fmt(v) {
+        if (v === null || v === undefined || v === '' || v === 'N/A' || v === '-') return '\u2014';
+        return String(v);
+      }
+
+      // Patent detail cards
+      function PatentDetails(d) {
+        const cards = [
+          { label: 'Title', value: d.title },
+          { label: 'Patent Number', value: d.patent_number },
+          { label: 'Application Number', value: d.application_number },
+          { label: 'Status', value: d.status },
+          { label: 'Application Type', value: d.application_type },
+          { label: 'Filing Date', value: d.filing_date },
+          { label: 'Grant Date', value: d.grant_date },
+          { label: 'Status Date', value: d.status_date },
+          { label: 'Examiner', value: d.examiner_name },
+          { label: 'Group Art Unit', value: d.group_art_unit },
+          { label: 'Class / Subclass', value: d.class_subclass },
+          { label: 'Entity Status', value: d.entity_status },
+          { label: 'First Inventor', value: d.first_inventor_name },
+          { label: 'First Applicant', value: d.first_applicant_name },
+          { label: 'Earliest Publication', value: d.earliest_publication_number },
+          { label: 'Publication Date', value: d.earliest_publication_date },
+        ];
+        return html`<div className="tip-stats-row">
+          ${cards.map(c => html`
+            <div key=${c.label} className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>${c.label}</div>
+              <div className="tip-card-value" style=${{ fontSize: '0.95rem', wordBreak: 'break-word' }}>${fmt(c.value)}</div>
+            </div>
+          `)}
+        </div>`;
+      }
+
+      // Attorney detail cards
+      function AttorneyDetails(d) {
+        return html`<div>
+          <div className="tip-stats-row">
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Name</div>
+              <div className="tip-card-value">${fmt(d.name)}</div>
+            </div>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Experience (Years)</div>
+              <div className="tip-card-value">${fmt(d.experience)}</div>
+            </div>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Group Art Units</div>
+              <div className="tip-card-value" style=${{ fontSize: '0.95rem' }}>${fmt(d.gau)}</div>
+            </div>
+          </div>
+          <div className="tip-stats-row" style=${{ marginTop: '1rem' }}>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total Applications</div>
+              <div className="tip-card-value">${fmt(d.total)}</div>
+            </div>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Granted</div>
+              <div className="tip-card-value">${fmt(d.granted)}</div>
+            </div>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Grant Rate</div>
+              <div className="tip-card-value">${d.grant_rate_text != null ? d.grant_rate_text + '%' : '\u2014'}</div>
+            </div>
+          </div>
+          <div className="tip-stats-row" style=${{ marginTop: '1rem' }}>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Application Range</div>
+              <div className="tip-card-value" style=${{ fontSize: '0.95rem' }}>${fmt(d.app_range)}</div>
+            </div>
+          </div>
+          <div className="tip-stats-row" style=${{ marginTop: '1rem' }}>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.5rem', fontWeight: 600 }}>Office Actions</div>
+              <div style=${{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Min</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.least_oa)}</div>
+                </div>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Average</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.average_oa)}</div>
+                </div>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Max</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.most_oa)}</div>
+                </div>
+              </div>
+            </div>
+            <div className="tip-card">
+              <div style=${{ fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.5rem', fontWeight: 600 }}>Pendency</div>
+              <div style=${{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Shortest</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.shortest_pendency)}</div>
+                </div>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Average</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.average_pendency)}</div>
+                </div>
+                <div>
+                  <div style=${{ fontSize: '0.75rem', color: 'var(--tip-text-secondary)' }}>Longest</div>
+                  <div style=${{ fontWeight: 600 }}>${fmt(d.longest_pendency)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      }
+
+      return html`<div className="tip-page">
+        <h1 className="tip-page-title">Unified Search</h1>
+
+        <div className="tip-card" style=${{ marginBottom: '1.5rem' }}>
+          <div style=${{ display: 'flex', gap: '1rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style=${{ flex: '0 0 auto' }}>
+              <label style=${{ display: 'block', fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.35rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Search Source</label>
+              <select
+                className="tip-btn tip-btn-outline"
+                value=${source}
+                onChange=${handleSourceChange}
+                style=${{ minWidth: '160px', cursor: 'pointer', appearance: 'auto', paddingRight: '2rem' }}
+              >
+                <option value="patent">Patent</option>
+                <option value="attorney">Attorney</option>
+              </select>
+            </div>
+            <div style=${{ flex: '1 1 300px', position: 'relative' }} ref=${searchRef}>
+              <label style=${{ display: 'block', fontSize: '0.8rem', color: 'var(--tip-text-secondary)', marginBottom: '0.35rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Search</label>
+              <input
+                type="text"
+                className="tip-btn-outline"
+                style=${{ width: '100%', padding: '0.6rem 0.9rem', border: '1px solid var(--tip-border, #d0d5dd)', borderRadius: '8px', fontSize: '0.95rem', outline: 'none', boxSizing: 'border-box', background: '#fff' }}
+                placeholder=${placeholder}
+                value=${query}
+                onInput=${handleQueryChange}
+                onFocus=${() => { if (suggestions.length > 0) setShowDropdown(true); }}
+              />
+              ${suggestLoading && html`<div style=${{ position: 'absolute', right: '12px', top: '38px', color: 'var(--tip-text-secondary)', fontSize: '0.8rem' }}>...</div>`}
+              ${showDropdown && html`<div style=${{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100, background: '#fff', border: '1px solid var(--tip-border, #d0d5dd)', borderRadius: '0 0 8px 8px', maxHeight: '260px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+                ${suggestions.map((item, idx) => html`
+                  <div
+                    key=${item.id || idx}
+                    onClick=${() => handleSelect(item)}
+                    style=${{ padding: '0.6rem 0.9rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '0.9rem' }}
+                    onMouseEnter=${(e) => { e.currentTarget.style.background = 'var(--tip-primary)'; e.currentTarget.style.color = '#fff'; }}
+                    onMouseLeave=${(e) => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.color = 'inherit'; }}
+                  >
+                    <div style=${{ fontWeight: 600 }}>${source === 'patent' ? (item.display || item.id) : (item.text || item.id)}</div>
+                    ${item.title && html`<div style=${{ fontSize: '0.78rem', color: 'var(--tip-text-secondary)', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${item.title}</div>`}
+                  </div>
+                `)}
+              </div>`}
+            </div>
+          </div>
+        </div>
+
+        ${loading && html`<div className="tip-card" style=${{ textAlign: 'center', padding: '2rem' }}>
+          <div style=${{ color: 'var(--tip-text-secondary)', fontSize: '1rem' }}>Loading details...</div>
+        </div>`}
+
+        ${error && html`<div className="tip-card" style=${{ borderLeft: '4px solid #e74c3c', padding: '1rem 1.25rem' }}>
+          <div style=${{ fontWeight: 600, color: '#e74c3c', marginBottom: '0.25rem' }}>Error</div>
+          <div style=${{ fontSize: '0.9rem', color: 'var(--tip-text-secondary)' }}>${error}</div>
+        </div>`}
+
+        ${!loading && !error && details && source === 'patent' && html`
+          <div>
+            <h2 style=${{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1rem', color: 'var(--tip-text-secondary)' }}>Patent Details</h2>
+            <${PatentDetails} ...${details} />
+          </div>
+        `}
+
+        ${!loading && !error && details && source === 'attorney' && html`
+          <div>
+            <h2 style=${{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1rem', color: 'var(--tip-text-secondary)' }}>Attorney Profile</h2>
+            <${AttorneyDetails} ...${details} />
+          </div>
+        `}
+
+        ${!loading && !error && !details && !selectedItem && html`<div className="tip-card" style=${{ textAlign: 'center', padding: '3rem 2rem' }}>
+          <div style=${{ fontSize: '2.5rem', marginBottom: '0.75rem', opacity: 0.3 }}>🔍</div>
+          <div style=${{ color: 'var(--tip-text-secondary)', fontSize: '1rem' }}>Select a source and start typing to search</div>
+          <div style=${{ color: 'var(--tip-text-secondary)', fontSize: '0.85rem', marginTop: '0.5rem', opacity: 0.7 }}>Results will appear here after you select an item</div>
+        </div>`}
+
+        <div className="tip-card" style=${{ marginTop: '2rem' }}>
+          <details>
+            <summary style=${{ cursor: 'pointer', fontWeight: 600, fontSize: '1rem', padding: '0.5rem 0', color: 'var(--tip-primary)' }}>Diagnostics</summary>
+            <div style=${{ marginTop: '1rem' }}>
+              <div className="tip-table-wrap">
+                <table className="tip-table">
+                  <thead>
+                    <tr>
+                      <th style=${{ width: '40px' }}>#</th>
+                      <th>Request</th>
+                      <th style=${{ width: '80px' }}>Method</th>
+                      <th>Endpoint</th>
+                      <th style=${{ width: '60px' }}>Status</th>
+                      <th>Input Parameters</th>
+                      <th>Output Fields</th>
+                      <th>Field Mapping</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td colSpan="8" style=${{ textAlign: 'center', color: 'var(--tip-text-secondary)', padding: '0.75rem' }}>
+                        <strong>User Request:</strong> ${USER_REQUEST}
+                      </td>
+                    </tr>
+                    ${apiCalls.length === 0 && html`<tr>
+                      <td colSpan="8" style=${{ textAlign: 'center', color: 'var(--tip-text-secondary)', padding: '0.75rem' }}>No API calls yet</td>
+                    </tr>`}
+                    ${apiCalls.map((call, idx) => html`
+                      <tr key=${idx}>
+                        <td>${idx + 1}</td>
+                        <td style=${{ fontSize: '0.8rem' }}>Unified Search</td>
+                        <td><span className="tip-tag tip-tag-primary">${call.method}</span></td>
+                        <td style=${{ fontSize: '0.8rem', wordBreak: 'break-all' }}>${call.path}</td>
+                        <td>${call.ok
+                          ? html`<span className="tip-tag tip-tag-success">${call.status}</span>`
+                          : html`<span className="tip-tag tip-tag-error">${call.status}</span>`
+                        }</td>
+                        <td style=${{ fontSize: '0.8rem' }}>${call.input ? JSON.stringify(call.input) : '\u2014'}</td>
+                        <td style=${{ fontSize: '0.8rem', maxWidth: '300px', wordBreak: 'break-word' }}>${call.output ? JSON.stringify(call.output) : '\u2014'}</td>
+                        <td style=${{ fontSize: '0.75rem', maxWidth: '250px', wordBreak: 'break-word' }}>${call.mapping || '\u2014'}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>`;
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+  </script>
+</body>
+</html>
